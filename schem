@@ -1,0 +1,342 @@
+from typing import Optional, Dict, Any, List
+from pydantic import BaseModel, Field, field_validator
+from enum import Enum
+import uuid
+ 
+ 
+def generate_uuid() -> str:
+    """Generate a new UUID4 string."""
+    return str(uuid.uuid4())
+ 
+ 
+class SSLMode(str, Enum):
+    """SSL mode options for database connections (PostgreSQL standard)."""
+    DISABLE = "disable"           # No SSL encryption (fastest, least secure)
+    ALLOW = "allow"               # Try SSL, fallback to non-SSL if fails
+    PREFER = "prefer"             # Try SSL first, fallback to non-SSL (default)
+    REQUIRE = "require"           # Force SSL, fail if not available
+    VERIFY_CA = "verify-ca"       # Force SSL + verify server certificate against CA
+    VERIFY_FULL = "verify-full"   # Force SSL + verify server cert + verify hostname
+ 
+ 
+class OwnerType(str, Enum):
+    """Owner entity types in OpenMetadata."""
+    USER = "user"
+    TEAM = "team"
+ 
+ 
+class EntityReference(BaseModel):
+    """Entity reference for owners, following OpenMetadata schema."""
+    name: Optional[str] = Field(default=None, description="Entity name (username or team name)", examples=["john.doe", "data-team"])
+    id: Optional[str] = Field(default=None, description="Entity UUID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    type: OwnerType = Field(..., description="Type of entity (user or team)")
+    
+    @field_validator('id', mode='before')
+    @classmethod
+    def generate_id_if_missing(cls, v, info):
+        """Generate UUID if both name and id are missing, or if explicitly requested."""
+        values = info.data if hasattr(info, 'data') else {}
+        if v == "auto" or (not v and not values.get('name')):
+            return str(uuid.uuid4())
+        return v
+    
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Ensure either name or id is provided (after UUID generation)
+        if not self.name and not self.id:
+            raise ValueError("Either 'name' or 'id' must be provided for EntityReference")
+    
+    @classmethod
+    def create_with_uuid(cls, type_value: OwnerType, name: Optional[str] = None) -> 'EntityReference':
+        """Helper method to create EntityReference with auto-generated UUID."""
+        return cls(
+            id=str(uuid.uuid4()),
+            name=name,
+            type=type_value
+        )
+    
+    model_config = {"use_enum_values": True}
+ 
+ 
+class MessageResponse(BaseModel):
+    """Generic message response model."""
+    message: str = Field(..., description="Response message")
+ 
+ 
+class PostgreSQLConnection(BaseModel):
+    """PostgreSQL connection configuration with type safety."""
+    type: str = Field(default="Postgres", description="Connection type")
+    scheme: str = Field(default="postgresql+psycopg2", description="SQLAlchemy driver scheme")
+    username: str = Field(..., description="Database username")
+    authType: Dict[str, str] = Field(..., description="Authentication configuration")
+    hostPort: str = Field(..., description="Host and port (e.g., localhost:5432)")
+    database: str = Field(..., description="Database name")
+    sslMode: Optional[SSLMode] = Field(default=SSLMode.PREFER, description="SSL connection mode")
+ 
+ 
+class DatabaseServicePayload(BaseModel):
+    """
+    Payload model for creating OpenMetadata Database Service.
+    Based on OpenMetadata API documentation for database service creation.
+    
+    For PostgreSQL connection example:
+    {
+        "name": "my-postgres-service",
+        "serviceType": "PostgreSQL",
+        "connection": {
+            "type": "Postgres",
+            "scheme": "postgresql+psycopg2",
+            "username": "postgres_user",
+            "authType": {
+                "password": "your_password"
+            },
+            "hostPort": "localhost:5432",
+            "database": "your_database"
+        },
+        "owners": [
+            {
+                "name": "john.doe",
+                "type": "user"
+            },
+            {
+                "name": "data-team",
+                "type": "team"
+            }
+        ]
+    }
+    """
+    # Required fields
+    name: str = Field(..., description="Service name - unique identifier", min_length=1, max_length=100)
+    serviceType: str = Field(..., description="Database service type (MySQL, PostgreSQL, etc.)", min_length=1)
+    
+    # Connection configuration (required)
+    connection: Dict[str, Any] = Field(..., description="Database connection configuration")
+    
+    # Optional fields with defaults
+    description: Optional[str] = Field(default=None, description="Service description", max_length=500)
+    displayName: Optional[str] = Field(default=None, description="Display name for the service", max_length=100)
+    tags: Optional[List[str]] = Field(default=None, description="Tags for categorization")
+    owners: Optional[List[EntityReference]] = Field(
+        default=None,
+        description="List of owners (users/teams) as entity references"
+    )
+    
+    model_config = {
+        "use_enum_values": True,
+        "json_schema_extra": {
+            "example": {
+                "name": "production-postgres",
+                "serviceType": "PostgreSQL",
+                "connection": {
+                    "type": "Postgres",
+                    "scheme": "postgresql+psycopg2",
+                    "username": "postgres_user",
+                    "authType": {
+                        "password": "your_password"
+                    },
+                    "hostPort": "localhost:5432",
+                    "database": "production_db",
+                    "sslMode": "require"
+                },
+                "description": "Production PostgreSQL database for main application",
+                "displayName": "Production Postgres",
+                "tags": ["production", "database"],
+                "owners": [
+                    {
+                        "name": "john.doe",
+                        "type": "user"
+                    },
+                    {
+                        "name": "data-engineering-team",
+                        "type": "team"
+                    }
+                ]
+            }
+        }
+    }
+ 
+ 
+class TagModel(BaseModel):
+    """Tag information model."""
+    tagFQN: str = Field(..., description="Fully qualified tag name")
+    description: Optional[str] = Field(default=None, description="Tag description")
+    source: Optional[str] = Field(default=None, description="Tag source")
+ 
+ 
+class OwnerModel(BaseModel):
+    """Owner information model."""
+    id: Optional[str] = Field(default=None, description="Owner ID")
+    name: str = Field(..., description="Owner name")
+    type: str = Field(..., description="Owner type (user/team)")
+    fullyQualifiedName: Optional[str] = Field(default=None, description="Fully qualified name")
+ 
+ 
+class ColumnModel(BaseModel):
+    """Enhanced Pydantic model for table columns with comprehensive metadata."""
+    name: str = Field(..., description="Column name")
+    dataType: Optional[str] = Field(default=None, description="Data type of the column")
+    dataTypeDisplay: Optional[str] = Field(default=None, description="Display format of the data type")
+    description: Optional[str] = Field(default=None, description="Column description")
+    ordinalPosition: Optional[int] = Field(default=None, description="Position of column in table")
+    constraint: Optional[str] = Field(default=None, description="Column constraint (PRIMARY_KEY, NOT_NULL, etc.)")
+    tags: List[TagModel] = Field(default_factory=list, description="Tags associated with the column")
+    
+    # Enhanced metadata fields
+    nullable: Optional[bool] = Field(default=None, description="Whether column accepts null values")
+    defaultValue: Optional[str] = Field(default=None, description="Default value for the column")
+    precision: Optional[int] = Field(default=None, description="Precision for numeric data types")
+    scale: Optional[int] = Field(default=None, description="Scale for numeric data types")
+    maxLength: Optional[int] = Field(default=None, description="Maximum length for string data types")
+    
+    # Additional OpenMetadata fields
+    arrayDataType: Optional[str] = Field(default=None, description="Data type for array elements")
+    dataLength: Optional[int] = Field(default=None, description="Length for char, varchar, binary types")
+    jsonSchema: Optional[str] = Field(default=None, description="JSON schema if dataType is JSON")
+    fullyQualifiedName: Optional[str] = Field(default=None, description="Fully qualified column name")
+    children: List['ColumnModel'] = Field(default_factory=list, description="Child columns for complex types")
+    customMetrics: Optional[Dict[str, Any]] = Field(default=None, description="Custom metrics for the column")
+ 
+ 
+class TableModel(BaseModel):
+    """Enhanced table information model with comprehensive metadata."""
+    id: str = Field(..., description="Table ID")
+    name: str = Field(..., description="Table name")
+    fullyQualifiedName: str = Field(..., description="Fully qualified table name")
+    tableType: Optional[str] = Field(default=None, description="Table type (TABLE, VIEW, etc.)")
+    description: Optional[str] = Field(default=None, description="Table description")
+    displayName: Optional[str] = Field(default=None, description="Table display name")
+    owners: List[OwnerModel] = Field(default=[], description="Table owners")
+    tags: List[TagModel] = Field(default=[], description="Table tags")
+    columns: List[ColumnModel] = Field(default=[], description="Table columns")
+    column_count: int = Field(..., description="Number of columns")
+    
+    # Core metadata fields
+    tableConstraints: Optional[List[Dict[str, Any]]] = Field(default=None, description="Table constraints")
+    partitionKeys: Optional[List[str]] = Field(default=None, description="Partition key columns")
+    distributionKeys: Optional[List[str]] = Field(default=None, description="Distribution key columns")
+    sortKeys: Optional[List[str]] = Field(default=None, description="Sort key columns")
+    tableProfile: Optional[Dict[str, Any]] = Field(default=None, description="Table profiling data")
+    sampleData: Optional[Dict[str, Any]] = Field(default=None, description="Sample data from table")
+    usageSummary: Optional[Dict[str, Any]] = Field(default=None, description="Table usage statistics")
+    lineage: Optional[Dict[str, Any]] = Field(default=None, description="Data lineage information")
+    
+    # Additional OpenMetadata fields from schema
+    schemaDefinition: Optional[str] = Field(default=None, description="DDL schema definition")
+    location: Optional[str] = Field(default=None, description="Table location/path")
+    locationPath: Optional[str] = Field(default=None, description="Full storage path for external tables")
+    fileFormat: Optional[str] = Field(default=None, description="File format for external tables")
+    retentionPeriod: Optional[str] = Field(default=None, description="Data retention period")
+    sourceUrl: Optional[str] = Field(default=None, description="Source URL of the table")
+    domains: List[str] = Field(default_factory=list, description="Domains the table belongs to")
+    dataProducts: List[str] = Field(default_factory=list, description="Data products this table is part of")
+    lifeCycle: Optional[Dict[str, Any]] = Field(default=None, description="Table lifecycle information")
+    certification: Optional[Dict[str, Any]] = Field(default=None, description="Certification status")
+    votes: Optional[Dict[str, Any]] = Field(default=None, description="Community votes")
+    testSuite: Optional[str] = Field(default=None, description="Associated test suite")
+    queries: Optional[List[str]] = Field(default=None, description="SQL queries used to create table")
+    customMetrics: Optional[List[Dict[str, Any]]] = Field(default=None, description="Custom metrics")
+    sourceHash: Optional[str] = Field(default=None, description="Source hash of the entity")
+    processedLineage: Optional[bool] = Field(default=None, description="Whether lineage has been processed")
+    joins: Optional[Dict[str, Any]] = Field(default=None, description="Table join information")
+    followers: Optional[List[str]] = Field(default=None, description="Followers of this table")
+ 
+ 
+class SchemaModel(BaseModel):
+    """Enhanced database schema information model."""
+    id: str = Field(..., description="Schema ID")
+    name: str = Field(..., description="Schema name")
+    fullyQualifiedName: str = Field(..., description="Fully qualified schema name")
+    description: Optional[str] = Field(default=None, description="Schema description")
+    tables: List[TableModel] = Field(default=[], description="Tables in this schema")
+    table_count: int = Field(..., description="Number of tables in schema")
+    # Additional metadata fields
+    owners: List[OwnerModel] = Field(default=[], description="Schema owners")
+    tags: List[TagModel] = Field(default=[], description="Schema tags")
+    retentionPeriod: Optional[str] = Field(default=None, description="Data retention period")
+ 
+ 
+class DatabaseModel(BaseModel):
+    """Enhanced database information model."""
+    id: str = Field(..., description="Database ID")
+    name: str = Field(..., description="Database name")
+    fullyQualifiedName: str = Field(..., description="Fully qualified database name")
+    description: Optional[str] = Field(default=None, description="Database description")
+    owners: List[OwnerModel] = Field(default=[], description="Database owners")
+    schemas: List[SchemaModel] = Field(default=[], description="Schemas in this database")
+    schema_count: int = Field(..., description="Number of schemas")
+    table_count: int = Field(..., description="Total number of tables in database")
+    
+    # Additional OpenMetadata fields
+    tags: List[TagModel] = Field(default=[], description="Database tags")
+    location: Optional[str] = Field(default=None, description="Database location/region")
+    databaseVersion: Optional[str] = Field(default=None, description="Database version")
+    dataProducts: List[str] = Field(default_factory=list, description="Data products this database is part of")
+    usageSummary: Optional[Dict[str, Any]] = Field(default=None, description="Database usage statistics")
+    retentionPeriod: Optional[str] = Field(default=None, description="Data retention period")
+    sourceUrl: Optional[str] = Field(default=None, description="Source URL of database")
+    domains: List[str] = Field(default_factory=list, description="Domains the database belongs to")
+    votes: Optional[Dict[str, Any]] = Field(default=None, description="Community votes")
+    lifeCycle: Optional[Dict[str, Any]] = Field(default=None, description="Database lifecycle information")
+    certification: Optional[Dict[str, Any]] = Field(default=None, description="Certification status")
+    followers: Optional[List[str]] = Field(default=None, description="Followers of this database")
+    sourceHash: Optional[str] = Field(default=None, description="Source hash of the entity")
+    default: Optional[bool] = Field(default=None, description="Whether this is a default database")
+ 
+ 
+class ServiceModel(BaseModel):
+    """Enhanced service information model."""
+    id: str = Field(..., description="Service ID")
+    name: str = Field(..., description="Service name")
+    serviceType: str = Field(..., description="Service type")
+    description: Optional[str] = Field(default=None, description="Service description")
+    displayName: Optional[str] = Field(default=None, description="Service display name")
+    fullyQualifiedName: str = Field(..., description="Fully qualified service name")
+    owners: List[OwnerModel] = Field(default=[], description="Service owners")
+    tags: List[TagModel] = Field(default=[], description="Service tags")
+    
+    # Additional OpenMetadata fields
+    connection: Optional[Dict[str, Any]] = Field(default=None, description="Service connection configuration")
+    version: Optional[str] = Field(default=None, description="Service version")
+    ingestionSchedule: Optional[Dict[str, Any]] = Field(default=None, description="Metadata ingestion schedule")
+    sourceUrl: Optional[str] = Field(default=None, description="Source URL of service")
+    domains: List[str] = Field(default_factory=list, description="Domains the service belongs to")
+    dataProducts: List[str] = Field(default_factory=list, description="Data products this service supports")
+    lifeCycle: Optional[Dict[str, Any]] = Field(default=None, description="Service lifecycle information")
+    certification: Optional[Dict[str, Any]] = Field(default=None, description="Certification status")
+    votes: Optional[Dict[str, Any]] = Field(default=None, description="Community votes")
+    followers: Optional[List[str]] = Field(default=None, description="Followers of this service")
+    sourceHash: Optional[str] = Field(default=None, description="Source hash of the entity")
+ 
+ 
+class MetadataSummary(BaseModel):
+    """Enhanced summary statistics for metadata extraction."""
+    total_databases: int = Field(..., description="Total number of databases")
+    total_schemas: int = Field(..., description="Total number of schemas")
+    total_tables: int = Field(..., description="Total number of tables")
+    total_columns: int = Field(..., description="Total number of columns")
+    total_views: int = Field(default=0, description="Total number of views")
+    total_owners: int = Field(default=0, description="Total number of unique owners")
+    total_tags: int = Field(default=0, description="Total number of unique tags")
+    data_extraction_timestamp: Optional[str] = Field(default=None, description="When this data was extracted")
+ 
+ 
+class DatabaseMetadataResponse(BaseModel):
+    """Complete database metadata response model."""
+    service: ServiceModel = Field(..., description="Service information")
+    databases: List[DatabaseModel] = Field(default=[], description="Databases in this service")
+    summary: MetadataSummary = Field(..., description="Summary statistics")
+ 
+ 
+class TableFilterInfo(BaseModel):
+    """Filter information for table listing."""
+    database_name: Optional[str] = Field(default=None, description="Database name filter")
+    schema_name: Optional[str] = Field(default=None, description="Schema name filter")
+    include_columns: bool = Field(default=True, description="Whether columns are included")
+ 
+ 
+class TablesResponse(BaseModel):
+    """Response model for table listing."""
+    service_name: str = Field(..., description="Service name")
+    filter: TableFilterInfo = Field(..., description="Applied filters")
+    tables: List[TableModel] = Field(default=[], description="List of tables")
+    count: int = Field(..., description="Number of tables returned")
